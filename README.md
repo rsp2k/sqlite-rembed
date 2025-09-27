@@ -4,6 +4,8 @@ A SQLite extension for generating text embeddings from remote APIs, now powered 
 
 Sister project to [`sqlite-vec`](https://github.com/asg017/sqlite-vec) for vector search and [`sqlite-lembed`](https://github.com/asg017/sqlite-lembed) for local embeddings.
 
+📚 **[Documentation](docs/)** | 🎯 **[Examples](examples/)** | 📖 **[API Reference](docs/guides/)**
+
 ## 🚀 Features
 
 - **10+ AI Providers**: OpenAI, Gemini, Anthropic, Ollama, Groq, Cohere, and more
@@ -124,7 +126,7 @@ SELECT rembed_images_concurrent('ollama-multimodal',
 | Concurrent-4 | 4.0x faster | 1.33 img/sec | **Recommended** |
 | Concurrent-6 | 5.5x faster | 1.80 img/sec | High performance |
 
-See [CONCURRENT_PROCESSING.md](CONCURRENT_PROCESSING.md) for detailed benchmarks and configuration.
+See [Concurrent Processing Guide](docs/guides/CONCURRENT_PROCESSING.md) for detailed benchmarks and configuration.
 
 ## 🔑 API Key Configuration
 
