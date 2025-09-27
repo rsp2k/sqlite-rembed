@@ -22,6 +22,7 @@ use serde_json;
 
 const FLOAT32_VECTOR_SUBTYPE: u8 = 223;
 const CLIENT_OPTIONS_POINTER_NAME: &[u8] = b"sqlite-rembed-client-options\0";
+const MULTIMODAL_CLIENT_OPTIONS_POINTER_NAME: &[u8] = b"sqlite-rembed-multimodal-client-options\0";
 
 pub fn rembed_version(context: *mut sqlite3_context, _values: &[*mut sqlite3_value]) -> Result<()> {
     api::result_text(context, format!("v{}-genai", env!("CARGO_PKG_VERSION")))?;
@@ -74,25 +75,41 @@ pub fn rembed_client_options(
         }
     }
 
-    // Build the model identifier based on format and options
-    let model = if let Some(format) = format {
-        // Legacy compatibility: convert old format to genai model
-        let model_name = options.get("model")
-            .ok_or_else(|| Error::new_message("'model' option is required"))?;
-        legacy_provider_to_model(&format, model_name)
-    } else if let Some(model) = options.get("model") {
-        model.clone()
+    // Check if this is a multimodal client (has embedding_model option)
+    if let Some(embedding_model) = options.get("embedding_model") {
+        // Create MultimodalClient
+        let vision_model = if let Some(format) = format {
+            // Legacy compatibility: convert old format to genai model
+            let model_name = options.get("model")
+                .ok_or_else(|| Error::new_message("'model' option is required for vision model"))?;
+            legacy_provider_to_model(&format, model_name)
+        } else if let Some(model) = options.get("model") {
+            model.clone()
+        } else {
+            return Err(Error::new_message("'model' or 'format' key is required for vision model"));
+        };
+
+        let multimodal_client = MultimodalClient::new(vision_model, embedding_model.clone())?;
+        api::result_pointer(context, MULTIMODAL_CLIENT_OPTIONS_POINTER_NAME, multimodal_client);
     } else {
-        return Err(Error::new_message("'model' or 'format' key is required"));
-    };
+        // Create regular EmbeddingClient
+        let model = if let Some(format) = format {
+            // Legacy compatibility: convert old format to genai model
+            let model_name = options.get("model")
+                .ok_or_else(|| Error::new_message("'model' option is required"))?;
+            legacy_provider_to_model(&format, model_name)
+        } else if let Some(model) = options.get("model") {
+            model.clone()
+        } else {
+            return Err(Error::new_message("'model' or 'format' key is required"));
+        };
 
-    let api_key = options.get("key").cloned()
-        .or_else(|| options.get("api_key").cloned());
+        let api_key = options.get("key").cloned()
+            .or_else(|| options.get("api_key").cloned());
 
-    // Create the client
-    let client = EmbeddingClient::new(model, api_key)?;
-
-    api::result_pointer(context, CLIENT_OPTIONS_POINTER_NAME, client);
+        let client = EmbeddingClient::new(model, api_key)?;
+        api::result_pointer(context, CLIENT_OPTIONS_POINTER_NAME, client);
+    }
 
     Ok(())
 }
@@ -177,14 +194,21 @@ fn column(index: i32) -> Option<Columns> {
     }
 }
 
+// Auxiliary data structure for the virtual table
+pub struct ClientsTableAux {
+    pub clients: Rc<RefCell<HashMap<String, EmbeddingClient>>>,
+    pub multimodal_clients: Rc<RefCell<HashMap<String, MultimodalClient>>>,
+}
+
 #[repr(C)]
 pub struct ClientsTable {
     base: sqlite3_vtab,
     clients: Rc<RefCell<HashMap<String, EmbeddingClient>>>,
+    multimodal_clients: Rc<RefCell<HashMap<String, MultimodalClient>>>,
 }
 
 impl<'vtab> VTab<'vtab> for ClientsTable {
-    type Aux = Rc<RefCell<HashMap<String, EmbeddingClient>>>;
+    type Aux = ClientsTableAux;
     type Cursor = ClientsCursor<'vtab>;
 
     fn create(
@@ -201,9 +225,15 @@ impl<'vtab> VTab<'vtab> for ClientsTable {
         _args: VTabArguments,
     ) -> Result<(String, ClientsTable)> {
         let base: sqlite3_vtab = unsafe { mem::zeroed() };
-        let clients = aux.expect("Required aux").to_owned();
+        let aux = aux.expect("Required aux");
+        let clients = aux.clients.clone();
+        let multimodal_clients = aux.multimodal_clients.clone();
 
-        let vtab = ClientsTable { base, clients };
+        let vtab = ClientsTable {
+            base,
+            clients,
+            multimodal_clients,
+        };
         let sql = "create table x(name text primary key, options)".to_owned();
 
         Ok((sql, vtab))
@@ -241,28 +271,33 @@ impl<'vtab> VTabWriteable<'vtab> for ClientsTable {
             UpdateOperation::Insert { values, rowid: _ } => {
                 let name = api::value_text(&values[0])?;
 
-                let client = match api::value_type(&values[1]) {
+                match api::value_type(&values[1]) {
                     ValueType::Text => {
                         let options = api::value_text(&values[1])?;
                         // Parse the options to get model and api key
                         let config = parse_client_options(name, options)?;
                         // Create client with the model and api key
-                        EmbeddingClient::new(config.model, config.api_key)?
+                        let client = EmbeddingClient::new(config.model, config.api_key)?;
+                        self.clients.borrow_mut().insert(name.to_owned(), client);
                     }
                     ValueType::Null => unsafe {
-                        // Handle pointer from rembed_client_options
-                        if let Some(client) =
+                        // Try multimodal client first
+                        if let Some(multimodal_client) =
+                            api::value_pointer::<MultimodalClient>(&values[1], MULTIMODAL_CLIENT_OPTIONS_POINTER_NAME)
+                        {
+                            self.multimodal_clients.borrow_mut().insert(name.to_owned(), (*multimodal_client).clone());
+                        }
+                        // Fallback to regular embedding client
+                        else if let Some(client) =
                             api::value_pointer::<EmbeddingClient>(&values[1], CLIENT_OPTIONS_POINTER_NAME)
                         {
-                            (*client).clone()
+                            self.clients.borrow_mut().insert(name.to_owned(), (*client).clone());
                         } else {
                             return Err(Error::new_message("client options required"));
                         }
                     },
                     _ => return Err(Error::new_message("client options required")),
                 };
-
-                self.clients.borrow_mut().insert(name.to_owned(), client);
             }
         }
         Ok(())
@@ -280,8 +315,20 @@ pub struct ClientsCursor<'vtab> {
 impl ClientsCursor<'_> {
     fn new(table: &mut ClientsTable) -> Result<ClientsCursor> {
         let base: sqlite3_vtab_cursor = unsafe { mem::zeroed() };
+
+        // Collect keys from both regular and multimodal clients
+        let mut keys = Vec::new();
+
+        // Add regular embedding client keys
         let c = table.clients.borrow();
-        let keys = c.keys().map(|k| k.to_string()).collect();
+        keys.extend(c.keys().map(|k| k.to_string()));
+        drop(c);
+
+        // Add multimodal client keys
+        let mc = table.multimodal_clients.borrow();
+        keys.extend(mc.keys().map(|k| k.to_string()));
+        drop(mc);
+
         let cursor = ClientsCursor {
             base,
             keys,
@@ -494,7 +541,13 @@ pub fn sqlite3_rembed_init(db: *mut sqlite3) -> Result<()> {
         flags,
     )?;
 
-    define_virtual_table_writeablex::<ClientsTable>(db, "rembed_clients", Some(Rc::clone(&clients)))?;
+    // Create auxiliary data for the virtual table
+    let clients_table_aux = ClientsTableAux {
+        clients: Rc::clone(&clients),
+        multimodal_clients: Rc::clone(&multimodal_clients),
+    };
+
+    define_virtual_table_writeablex::<ClientsTable>(db, "rembed_clients", Some(clients_table_aux))?;
 
     // Batch embedding function
     define_scalar_function_with_aux(
