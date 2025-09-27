@@ -1419,6 +1419,7 @@ dependencies = [
 name = "sqlite-rembed"
 version = "0.0.1-alpha.9"
 dependencies = [
+ "base64",
  "genai",
  "once_cell",
  "serde_json",

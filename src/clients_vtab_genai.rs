@@ -7,18 +7,14 @@ use sqlite_loadable::{
 };
 use std::{cell::RefCell, collections::HashMap, marker::PhantomData, mem, os::raw::c_int, rc::Rc};
 
-use crate::clients::MixedbreadClient;
-use crate::{
-    clients::{
-        Client, CohereClient, JinaClient, LlamafileClient, NomicClient, OllamaClient, OpenAiClient,
-    },
-    CLIENT_OPTIONS_POINTER_NAME,
-};
+use crate::genai_client::{EmbeddingClient, parse_client_options};
+use crate::CLIENT_OPTIONS_POINTER_NAME;
 
 enum Columns {
     Name,
     Options,
 }
+
 fn column(index: i32) -> Option<Columns> {
     match index {
         0 => Some(Columns::Name),
@@ -26,15 +22,16 @@ fn column(index: i32) -> Option<Columns> {
         _ => None,
     }
 }
+
 #[repr(C)]
 pub struct ClientsTable {
     /// must be first
     base: sqlite3_vtab,
-    clients: Rc<RefCell<HashMap<String, Client>>>,
+    clients: Rc<RefCell<HashMap<String, EmbeddingClient>>>,
 }
 
 impl<'vtab> VTab<'vtab> for ClientsTable {
-    type Aux = Rc<RefCell<HashMap<String, Client>>>;
+    type Aux = Rc<RefCell<HashMap<String, EmbeddingClient>>>;
     type Cursor = ClientsCursor<'vtab>;
 
     fn create(
@@ -44,6 +41,7 @@ impl<'vtab> VTab<'vtab> for ClientsTable {
     ) -> Result<(String, Self)> {
         Self::connect(db, aux, args)
     }
+
     fn connect(
         _db: *mut sqlite3,
         aux: Option<&Self::Aux>,
@@ -57,6 +55,7 @@ impl<'vtab> VTab<'vtab> for ClientsTable {
 
         Ok((sql, vtab))
     }
+
     fn destroy(&self) -> Result<()> {
         Ok(())
     }
@@ -88,26 +87,21 @@ impl<'vtab> VTabWriteable<'vtab> for ClientsTable {
             }
             UpdateOperation::Insert { values, rowid: _ } => {
                 let name = api::value_text(&values[0])?;
+
                 let client = match api::value_type(&values[1]) {
-                    ValueType::Text => match api::value_text(&values[1])? {
-                        "openai" => Client::OpenAI(OpenAiClient::new(name, None, None)?),
-                        "mixedbread" => {
-                            Client::Mixedbread(MixedbreadClient::new(name, None, None)?)
-                        }
-                        "jina" => Client::Jina(JinaClient::new(name, None, None)?),
-                        "nomic" => Client::Nomic(NomicClient::new(name, None, None)?),
-                        "cohere" => Client::Cohere(CohereClient::new(name, None, None)?),
-                        "ollama" => Client::Ollama(OllamaClient::new(name, None)),
-                        "llamafile" => Client::Llamafile(LlamafileClient::new(None)),
-                        text => {
-                            return Err(Error::new_message(format!(
-                                "'{text}' is not a valid rembed client."
-                            )))
-                        }
-                    },
+                    ValueType::Text => {
+                        let options = api::value_text(&values[1])?;
+
+                        // Parse the options to get the model string
+                        let model = parse_client_options(name, options)?;
+
+                        // Create client with the model
+                        EmbeddingClient::new(model, None)?
+                    }
                     ValueType::Null => unsafe {
+                        // Handle pointer from rembed_client_options
                         if let Some(client) =
-                            api::value_pointer::<Client>(&values[1], CLIENT_OPTIONS_POINTER_NAME)
+                            api::value_pointer::<EmbeddingClient>(&values[1], CLIENT_OPTIONS_POINTER_NAME)
                         {
                             (*client).clone()
                         } else {
@@ -116,6 +110,7 @@ impl<'vtab> VTabWriteable<'vtab> for ClientsTable {
                     },
                     _ => return Err(Error::new_message("client options required")),
                 };
+
                 self.clients.borrow_mut().insert(name.to_owned(), client);
             }
         }
@@ -131,6 +126,7 @@ pub struct ClientsCursor<'vtab> {
     rowid: i64,
     phantom: PhantomData<&'vtab ClientsTable>,
 }
+
 impl ClientsCursor<'_> {
     fn new(table: &mut ClientsTable) -> Result<ClientsCursor> {
         let base: sqlite3_vtab_cursor = unsafe { mem::zeroed() };

@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use genai_client::{EmbeddingClient, ClientConfig, parse_client_options, legacy_provider_to_model};
+use genai_client::{EmbeddingClient, parse_client_options, legacy_provider_to_model};
 use sqlite_loadable::{
     api, define_scalar_function, define_scalar_function_with_aux, define_virtual_table_writeablex,
     prelude::*, Error, Result,
@@ -15,6 +15,8 @@ use sqlite_loadable::api::ValueType;
 use sqlite_loadable::BestIndexError;
 use std::{marker::PhantomData, mem, os::raw::c_int};
 use zerocopy::AsBytes;
+use base64;
+use serde_json;
 
 const FLOAT32_VECTOR_SUBTYPE: u8 = 223;
 const CLIENT_OPTIONS_POINTER_NAME: &[u8] = b"sqlite-rembed-client-options\0";
@@ -105,6 +107,48 @@ pub fn rembed(
 
     api::result_blob(context, embedding.as_bytes());
     api::result_subtype(context, FLOAT32_VECTOR_SUBTYPE);
+    Ok(())
+}
+
+// Batch embedding function - accepts JSON array of texts
+pub fn rembed_batch(
+    context: *mut sqlite3_context,
+    values: &[*mut sqlite3_value],
+    clients: &Rc<RefCell<HashMap<String, EmbeddingClient>>>,
+) -> Result<()> {
+    let client_name = api::value_text(&values[0])?;
+    let json_input = api::value_text(&values[1])?;
+
+    // Parse JSON array of texts
+    let texts: Vec<String> = serde_json::from_str(json_input)
+        .map_err(|e| Error::new_message(format!("Invalid JSON array: {}", e)))?;
+
+    if texts.is_empty() {
+        return Err(Error::new_message("Input array cannot be empty"));
+    }
+
+    let clients_map = clients.borrow();
+    let client = clients_map.get(client_name).ok_or_else(|| {
+        Error::new_message(format!(
+            "Client with name {} was not registered with rembed_clients.",
+            client_name
+        ))
+    })?;
+
+    // Generate embeddings in batch
+    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let embeddings = client.embed_batch_sync(text_refs)?;
+
+    // Return as JSON array of base64-encoded embeddings
+    let result: Vec<String> = embeddings.into_iter()
+        .map(|embedding| {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(embedding.as_bytes())
+        })
+        .collect();
+
+    api::result_text(context, serde_json::to_string(&result)
+        .map_err(|e| Error::new_message(format!("JSON serialization failed: {}", e)))?)?;
     Ok(())
 }
 
@@ -274,6 +318,9 @@ impl VTabCursor for ClientsCursor<'_> {
     }
 }
 
+// For now, we'll focus on the scalar batch function approach
+// Table function implementation can be added later when sqlite-loadable has better support
+
 #[sqlite_entrypoint]
 pub fn sqlite3_rembed_init(db: *mut sqlite3) -> Result<()> {
     let flags = FunctionFlags::UTF8
@@ -311,6 +358,18 @@ pub fn sqlite3_rembed_init(db: *mut sqlite3) -> Result<()> {
     )?;
 
     define_virtual_table_writeablex::<ClientsTable>(db, "rembed_clients", Some(Rc::clone(&clients)))?;
+
+    // Batch embedding function
+    define_scalar_function_with_aux(
+        db,
+        "rembed_batch",
+        2,
+        rembed_batch,
+        flags,
+        Rc::clone(&clients),
+    )?;
+
+    // Table function will be added in a future version when sqlite-loadable has better support
 
     Ok(())
 }
