@@ -3,7 +3,6 @@
 import json
 import sqlite3
 import sys
-import tempfile
 from pathlib import Path
 
 # Add parent directory to path for development testing
@@ -13,7 +12,7 @@ import sqlite_rembed
 
 def test_load_extension():
     """Test that the extension can be loaded."""
-    conn = sqlite3.connect(':memory:')
+    conn = sqlite3.connect(":memory:")
     conn.enable_load_extension(True)
 
     # Load the extension
@@ -32,7 +31,7 @@ def test_load_extension():
 
 def test_debug_info():
     """Test the debug function."""
-    conn = sqlite3.connect(':memory:')
+    conn = sqlite3.connect(":memory:")
     conn.enable_load_extension(True)
     sqlite_rembed.load(conn)
     conn.enable_load_extension(False)
@@ -47,7 +46,7 @@ def test_debug_info():
 
 def test_client_registration():
     """Test registering a client."""
-    conn = sqlite3.connect(':memory:')
+    conn = sqlite3.connect(":memory:")
     conn.enable_load_extension(True)
     sqlite_rembed.load(conn)
     conn.enable_load_extension(False)
@@ -61,14 +60,14 @@ def test_client_registration():
     # Verify the client was registered
     result = conn.execute("SELECT name FROM temp.rembed_clients").fetchall()
     assert len(result) >= 1
-    assert ('test-ollama',) in result
-    print(f"✓ Registered client: test-ollama")
+    assert ("test-ollama",) in result
+    print("✓ Registered client: test-ollama")
     conn.close()
 
 
 def test_multimodal_client():
     """Test the default multimodal client."""
-    conn = sqlite3.connect(':memory:')
+    conn = sqlite3.connect(":memory:")
     conn.enable_load_extension(True)
     sqlite_rembed.load(conn)
     conn.enable_load_extension(False)
@@ -88,7 +87,7 @@ def test_multimodal_client():
 
 def test_batch_function():
     """Test that batch functions are available."""
-    conn = sqlite3.connect(':memory:')
+    conn = sqlite3.connect(":memory:")
     conn.enable_load_extension(True)
     sqlite_rembed.load(conn)
     conn.enable_load_extension(False)
@@ -112,7 +111,7 @@ def test_batch_function():
 
 def test_helper_functions():
     """Test helper functions like readfile_base64."""
-    conn = sqlite3.connect(':memory:')
+    conn = sqlite3.connect(":memory:")
     conn.enable_load_extension(True)
     sqlite_rembed.load(conn)
     conn.enable_load_extension(False)
@@ -122,9 +121,10 @@ def test_helper_functions():
     result = conn.execute("SELECT readfile_base64(?)", (test_data,)).fetchone()
 
     import base64
-    expected = base64.b64encode(test_data).decode('utf-8')
+
+    expected = base64.b64encode(test_data).decode("utf-8")
     assert result[0] == expected
-    print(f"✓ readfile_base64 helper function works")
+    print("✓ readfile_base64 helper function works")
 
     conn.close()
 
@@ -139,7 +139,7 @@ def test_package_version():
 def test_load_ext_path():
     """Test that load_ext returns the extension path."""
     ext_path = sqlite_rembed.load_ext()
-    assert ext_path.endswith(('.so', '.dylib', '.dll'))
+    assert ext_path.endswith((".so", ".dylib", ".dll"))
     print(f"✓ Extension path: {ext_path}")
 
 

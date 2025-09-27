@@ -25,13 +25,10 @@ Usage:
     result = conn.execute("SELECT rembed('openai', 'Hello world')").fetchone()
 """
 
-import os
 import platform
 import sqlite3
-import sys
 from pathlib import Path
 from typing import Optional
-
 
 __version__ = "0.0.1a9"
 
