@@ -19,6 +19,17 @@ Sister project to [`sqlite-vec`](https://github.com/asg017/sqlite-vec) for vecto
 
 ## 📦 Installation
 
+### Python Package
+
+```bash
+pip install sqlite-rembed  # Coming soon to PyPI
+```
+
+For now, build from source and install locally:
+```bash
+make python-install
+```
+
 ### Pre-built Binaries
 
 Download from [Releases](https://github.com/asg017/sqlite-rembed/releases) for your platform.
@@ -39,6 +50,8 @@ sqlite3 :memory: '.load dist/debug/rembed0' 'SELECT rembed_version()'
 ```
 
 ## 🎯 Quick Start
+
+### SQLite CLI
 
 ```sql
 -- Load the extension
@@ -69,6 +82,31 @@ SELECT json_array_length(rembed_batch('openai-fast', batch))
 FROM texts;
 -- Output: 100 (all embeddings in one API call!)
 ```
+
+### Python
+
+```python
+import sqlite3
+import sqlite_rembed
+
+# Load the extension
+conn = sqlite3.connect(':memory:')
+conn.enable_load_extension(True)
+sqlite_rembed.load(conn)
+conn.enable_load_extension(False)
+
+# Configure clients
+conn.execute("""
+    INSERT INTO temp.rembed_clients(name, options) VALUES
+    ('openai', 'openai:YOUR_API_KEY')
+""")
+
+# Generate embedding
+result = conn.execute("SELECT rembed('openai', 'Hello, world!')").fetchone()
+embedding = result[0]  # Binary blob with float32 array
+```
+
+See [Python documentation](bindings/python/README.md) for more examples.
 
 ## 💡 Batch Processing (Fixes [#1](https://github.com/asg017/sqlite-rembed/issues/1))
 
