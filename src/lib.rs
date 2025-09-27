@@ -1,11 +1,13 @@
 // New lib.rs using genai - complete implementation
 mod genai_client;
+mod multimodal;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use genai_client::{EmbeddingClient, parse_client_options, legacy_provider_to_model};
+use multimodal::{MultimodalClient, MultimodalConfig};
 use sqlite_loadable::{
     api, define_scalar_function, define_scalar_function_with_aux, define_virtual_table_writeablex,
     prelude::*, Error, Result,
@@ -321,6 +323,57 @@ impl VTabCursor for ClientsCursor<'_> {
 // For now, we'll focus on the scalar batch function approach
 // Table function implementation can be added later when sqlite-loadable has better support
 
+// Image embedding using hybrid approach (vision model → text → embedding)
+pub fn rembed_image(
+    context: *mut sqlite3_context,
+    values: &[*mut sqlite3_value],
+    multimodal_clients: &Rc<RefCell<HashMap<String, MultimodalClient>>>,
+) -> Result<()> {
+    let client_name = api::value_text(&values[0])?;
+    let image_blob = api::value_blob(&values[1])?;
+
+    let clients_map = multimodal_clients.borrow();
+    let client = clients_map.get(client_name).ok_or_else(|| {
+        Error::new_message(format!(
+            "Multimodal client with name {} was not registered.",
+            client_name
+        ))
+    })?;
+
+    // Generate embedding using hybrid approach
+    let embedding = client.embed_image_sync(image_blob)?;
+
+    api::result_blob(context, embedding.as_bytes());
+    api::result_subtype(context, FLOAT32_VECTOR_SUBTYPE);
+    Ok(())
+}
+
+// Image embedding with custom prompt
+pub fn rembed_image_prompt(
+    context: *mut sqlite3_context,
+    values: &[*mut sqlite3_value],
+    multimodal_clients: &Rc<RefCell<HashMap<String, MultimodalClient>>>,
+) -> Result<()> {
+    let client_name = api::value_text(&values[0])?;
+    let image_blob = api::value_blob(&values[1])?;
+    let prompt = api::value_text(&values[2])?;
+
+    let clients_map = multimodal_clients.borrow();
+    let client = clients_map.get(client_name).ok_or_else(|| {
+        Error::new_message(format!(
+            "Multimodal client with name {} was not registered.",
+            client_name
+        ))
+    })?;
+
+    // Generate embedding with custom prompt
+    let embedding = client.embed_image_with_prompt_sync(image_blob, prompt)?;
+
+    api::result_blob(context, embedding.as_bytes());
+    api::result_subtype(context, FLOAT32_VECTOR_SUBTYPE);
+    Ok(())
+}
+
 #[sqlite_entrypoint]
 pub fn sqlite3_rembed_init(db: *mut sqlite3) -> Result<()> {
     let flags = FunctionFlags::UTF8
@@ -328,6 +381,9 @@ pub fn sqlite3_rembed_init(db: *mut sqlite3) -> Result<()> {
         | unsafe { FunctionFlags::from_bits_unchecked(0x001000000) };
 
     let clients: Rc<RefCell<HashMap<String, EmbeddingClient>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+
+    let multimodal_clients: Rc<RefCell<HashMap<String, MultimodalClient>>> =
         Rc::new(RefCell::new(HashMap::new()));
 
     define_scalar_function(
@@ -370,6 +426,34 @@ pub fn sqlite3_rembed_init(db: *mut sqlite3) -> Result<()> {
     )?;
 
     // Table function will be added in a future version when sqlite-loadable has better support
+
+    // Image embedding functions (hybrid multimodal)
+    define_scalar_function_with_aux(
+        db,
+        "rembed_image",
+        2,
+        rembed_image,
+        flags,
+        Rc::clone(&multimodal_clients),
+    )?;
+
+    define_scalar_function_with_aux(
+        db,
+        "rembed_image_prompt",
+        3,
+        rembed_image_prompt,
+        flags,
+        Rc::clone(&multimodal_clients),
+    )?;
+
+    // Register multimodal Ollama client by default
+    multimodal_clients.borrow_mut().insert(
+        "ollama-multimodal".to_string(),
+        MultimodalClient::new(
+            "ollama::llava:7b".to_string(),
+            "ollama::nomic-embed-text".to_string(),
+        )?,
+    );
 
     Ok(())
 }
