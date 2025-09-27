@@ -12,28 +12,87 @@ static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     Runtime::new().expect("Failed to create tokio runtime")
 });
 
+/// Provider capabilities for intelligent routing
+#[derive(Debug, Clone)]
+pub struct ProviderCapabilities {
+    pub supports_image_embeddings: bool,
+    pub supports_multimodal_batch: bool,
+    pub max_batch_size: usize,
+    pub supported_formats: Vec<String>,
+}
+
 /// Hybrid multimodal client that combines vision and embedding models
+/// with future-ready support for native image embeddings
 #[derive(Clone)]
 pub struct MultimodalClient {
     client: Arc<GenAiClient>,
     vision_model: String,
     embedding_model: String,
+    capabilities: ProviderCapabilities,
 }
 
 impl MultimodalClient {
     /// Create a new multimodal client
     pub fn new(vision_model: String, embedding_model: String) -> Result<Self> {
+        // Detect provider capabilities
+        let capabilities = Self::detect_capabilities(&embedding_model);
+
         Ok(Self {
             client: Arc::new(GenAiClient::default()),
             vision_model,
             embedding_model,
+            capabilities,
         })
     }
 
-    /// Process an image using the hybrid approach:
-    /// 1. Describe image using vision model (LLaVA)
-    /// 2. Embed the description using text embedding model
+    /// Detect provider capabilities for intelligent routing
+    fn detect_capabilities(model: &str) -> ProviderCapabilities {
+        // Extract provider from model string (e.g., "openai::model" -> "openai")
+        let provider = model.split("::").next().unwrap_or("unknown");
+
+        match provider {
+            "openai" => ProviderCapabilities {
+                supports_image_embeddings: false,  // Coming soon
+                supports_multimodal_batch: false,
+                max_batch_size: 100,
+                supported_formats: vec!["jpeg".to_string(), "png".to_string()],
+            },
+            "ollama" => ProviderCapabilities {
+                supports_image_embeddings: false,  // Under development
+                supports_multimodal_batch: false,
+                max_batch_size: 50,
+                supported_formats: vec!["jpeg".to_string(), "png".to_string()],
+            },
+            "voyage" => ProviderCapabilities {
+                supports_image_embeddings: true,   // Future provider
+                supports_multimodal_batch: true,
+                max_batch_size: 20,
+                supported_formats: vec!["jpeg".to_string(), "png".to_string(), "webp".to_string()],
+            },
+            "jina" => ProviderCapabilities {
+                supports_image_embeddings: true,   // Future capability
+                supports_multimodal_batch: true,
+                max_batch_size: 16,
+                supported_formats: vec!["jpeg".to_string(), "png".to_string()],
+            },
+            _ => ProviderCapabilities {
+                supports_image_embeddings: false,
+                supports_multimodal_batch: false,
+                max_batch_size: 10,
+                supported_formats: vec!["jpeg".to_string()],
+            },
+        }
+    }
+
+    /// Process an image with intelligent routing:
+    /// - Uses native image embeddings if provider supports it (future)
+    /// - Falls back to hybrid approach (vision → text → embedding) otherwise
     pub fn embed_image_sync(&self, image_data: &[u8]) -> Result<Vec<f32>> {
+        // Check if provider supports native image embeddings
+        if self.capabilities.supports_image_embeddings {
+            // Future: Use native image embedding API when available
+            eprintln!("Note: Provider claims image embedding support, but using hybrid approach until native API is available");
+        }
         let client = self.client.clone();
         let vision_model = self.vision_model.clone();
         let embedding_model = self.embedding_model.clone();
