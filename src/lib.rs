@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use genai_client::{EmbeddingClient, parse_client_options, legacy_provider_to_model};
-use multimodal::{MultimodalClient, MultimodalConfig};
+use multimodal::{MultimodalClient, ProcessingStats};
 use sqlite_loadable::{
     api, define_scalar_function, define_scalar_function_with_aux, define_virtual_table_writeablex,
     prelude::*, Error, Result,
@@ -25,6 +25,15 @@ const CLIENT_OPTIONS_POINTER_NAME: &[u8] = b"sqlite-rembed-client-options\0";
 
 pub fn rembed_version(context: *mut sqlite3_context, _values: &[*mut sqlite3_value]) -> Result<()> {
     api::result_text(context, format!("v{}-genai", env!("CARGO_PKG_VERSION")))?;
+    Ok(())
+}
+
+// Helper function to base64 encode a blob (useful for image processing)
+pub fn readfile_base64(context: *mut sqlite3_context, values: &[*mut sqlite3_value]) -> Result<()> {
+    let blob = api::value_blob(&values[0]);
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(blob);
+    api::result_text(context, encoded)?;
     Ok(())
 }
 
@@ -330,7 +339,7 @@ pub fn rembed_image(
     multimodal_clients: &Rc<RefCell<HashMap<String, MultimodalClient>>>,
 ) -> Result<()> {
     let client_name = api::value_text(&values[0])?;
-    let image_blob = api::value_blob(&values[1])?;
+    let image_blob = api::value_blob(&values[1]);
 
     let clients_map = multimodal_clients.borrow();
     let client = clients_map.get(client_name).ok_or_else(|| {
@@ -355,7 +364,7 @@ pub fn rembed_image_prompt(
     multimodal_clients: &Rc<RefCell<HashMap<String, MultimodalClient>>>,
 ) -> Result<()> {
     let client_name = api::value_text(&values[0])?;
-    let image_blob = api::value_blob(&values[1])?;
+    let image_blob = api::value_blob(&values[1]);
     let prompt = api::value_text(&values[2])?;
 
     let clients_map = multimodal_clients.borrow();
@@ -371,6 +380,69 @@ pub fn rembed_image_prompt(
 
     api::result_blob(context, embedding.as_bytes());
     api::result_subtype(context, FLOAT32_VECTOR_SUBTYPE);
+    Ok(())
+}
+
+// Concurrent batch image processing for high performance
+pub fn rembed_images_concurrent(
+    context: *mut sqlite3_context,
+    values: &[*mut sqlite3_value],
+    multimodal_clients: &Rc<RefCell<HashMap<String, MultimodalClient>>>,
+) -> Result<()> {
+    let client_name = api::value_text(&values[0])?;
+    let json_input = api::value_text(&values[1])?;
+
+    // Parse JSON array of base64-encoded images
+    let images_base64: Vec<String> = serde_json::from_str(json_input)
+        .map_err(|e| Error::new_message(format!("Invalid JSON array: {}", e)))?;
+
+    if images_base64.is_empty() {
+        return Err(Error::new_message("Input array cannot be empty"));
+    }
+
+    let clients_map = multimodal_clients.borrow();
+    let client = clients_map.get(client_name).ok_or_else(|| {
+        Error::new_message(format!(
+            "Multimodal client with name {} was not registered.",
+            client_name
+        ))
+    })?;
+
+    // Decode base64 images
+    let mut images: Vec<Vec<u8>> = Vec::new();
+    for img_base64 in &images_base64 {
+        use base64::Engine as _;
+        let img_data = base64::engine::general_purpose::STANDARD.decode(img_base64)
+            .map_err(|e| Error::new_message(format!("Base64 decode failed: {}", e)))?;
+        images.push(img_data);
+    }
+
+    // Process concurrently
+    let image_refs: Vec<&[u8]> = images.iter().map(|v| v.as_slice()).collect();
+    let (embeddings, stats) = client.embed_images_concurrent_sync(image_refs)?;
+
+    // Return JSON with embeddings and statistics
+    let result: serde_json::Value = serde_json::json!({
+        "embeddings": embeddings.iter().map(|embedding| {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(embedding.as_bytes())
+        }).collect::<Vec<_>>(),
+        "stats": {
+            "total_processed": stats.total_processed,
+            "successful": stats.successful,
+            "failed": stats.failed,
+            "total_duration_ms": stats.total_duration.as_millis(),
+            "avg_time_per_item_ms": stats.avg_time_per_item.as_millis(),
+            "throughput": if stats.total_duration.as_secs_f64() > 0.0 {
+                stats.successful as f64 / stats.total_duration.as_secs_f64()
+            } else {
+                0.0
+            }
+        }
+    });
+
+    api::result_text(context, serde_json::to_string(&result)
+        .map_err(|e| Error::new_message(format!("JSON serialization failed: {}", e)))?)?;
     Ok(())
 }
 
@@ -399,6 +471,15 @@ pub fn sqlite3_rembed_init(db: *mut sqlite3) -> Result<()> {
         "rembed_debug",
         0,
         rembed_debug,
+        FunctionFlags::UTF8 | FunctionFlags::DETERMINISTIC,
+    )?;
+
+    // Helper function for base64 encoding (useful with image functions)
+    define_scalar_function(
+        db,
+        "readfile_base64",
+        1,
+        readfile_base64,
         FunctionFlags::UTF8 | FunctionFlags::DETERMINISTIC,
     )?;
 
@@ -442,6 +523,16 @@ pub fn sqlite3_rembed_init(db: *mut sqlite3) -> Result<()> {
         "rembed_image_prompt",
         3,
         rembed_image_prompt,
+        flags,
+        Rc::clone(&multimodal_clients),
+    )?;
+
+    // High-performance concurrent image batch processing
+    define_scalar_function_with_aux(
+        db,
+        "rembed_images_concurrent",
+        2,
+        rembed_images_concurrent,
         flags,
         Rc::clone(&multimodal_clients),
     )?;

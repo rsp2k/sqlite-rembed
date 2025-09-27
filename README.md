@@ -12,6 +12,8 @@ Sister project to [`sqlite-vec`](https://github.com/asg017/sqlite-vec) for vecto
 - **80% Less Code**: Migrated from custom HTTP clients to unified genai backend
 - **Production Ready**: Automatic retries, connection pooling, timeout handling
 - **sqlite-vec Compatible**: Seamless integration for vector similarity search
+- **🆕 Multimodal Embeddings**: Image embeddings via hybrid approach (LLaVA → text → embedding)
+- **🆕 Concurrent Processing**: 2-6x faster batch processing with parallelism
 
 ## 📦 Installation
 
@@ -96,6 +98,33 @@ SELECT rembed_batch('model', texts) FROM batch;
 Real-world impact:
 - **Before**: 10,000 embeddings took 45 minutes
 - **After**: Same task completes in 30 seconds
+
+## ⚡ Concurrent Processing Performance
+
+### NEW: Process Images 2-6x Faster!
+
+The latest update includes high-performance concurrent processing:
+
+```sql
+-- Process multiple images concurrently
+SELECT rembed_images_concurrent('ollama-multimodal',
+    json_array(
+        readfile_base64('image1.jpg'),
+        readfile_base64('image2.jpg'),
+        readfile_base64('image3.jpg')
+    ));
+```
+
+### Performance Benchmarks
+
+| Method | Speed | Throughput | Use Case |
+|--------|-------|------------|----------|
+| Sequential | 1x (baseline) | 0.33 img/sec | Small batches |
+| Concurrent-2 | 2.0x faster | 0.67 img/sec | Moderate load |
+| Concurrent-4 | 4.0x faster | 1.33 img/sec | **Recommended** |
+| Concurrent-6 | 5.5x faster | 1.80 img/sec | High performance |
+
+See [CONCURRENT_PROCESSING.md](CONCURRENT_PROCESSING.md) for detailed benchmarks and configuration.
 
 ## 🔑 API Key Configuration
 

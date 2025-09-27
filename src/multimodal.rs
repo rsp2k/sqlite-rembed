@@ -4,8 +4,11 @@
 use genai::{Client as GenAiClient, chat::{ChatMessage, ChatRequest, ContentPart}};
 use sqlite_loadable::{Error, Result};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
+use tokio::sync::Semaphore;
 use once_cell::sync::Lazy;
+use futures::stream::{self, StreamExt};
 
 /// Global tokio runtime for async operations
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
@@ -21,6 +24,36 @@ pub struct ProviderCapabilities {
     pub supported_formats: Vec<String>,
 }
 
+/// Performance configuration for concurrent processing
+#[derive(Debug, Clone)]
+pub struct PerformanceConfig {
+    pub max_concurrent_requests: usize,
+    pub request_timeout: Duration,
+    pub batch_size: usize,
+    pub enable_progress_reporting: bool,
+}
+
+impl Default for PerformanceConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_requests: 4,
+            request_timeout: Duration::from_secs(30),
+            batch_size: 10,
+            enable_progress_reporting: false,
+        }
+    }
+}
+
+/// Processing statistics for performance monitoring
+#[derive(Debug, Clone)]
+pub struct ProcessingStats {
+    pub total_processed: usize,
+    pub successful: usize,
+    pub failed: usize,
+    pub total_duration: Duration,
+    pub avg_time_per_item: Duration,
+}
+
 /// Hybrid multimodal client that combines vision and embedding models
 /// with future-ready support for native image embeddings
 #[derive(Clone)]
@@ -29,11 +62,21 @@ pub struct MultimodalClient {
     vision_model: String,
     embedding_model: String,
     capabilities: ProviderCapabilities,
+    performance_config: PerformanceConfig,
 }
 
 impl MultimodalClient {
     /// Create a new multimodal client
     pub fn new(vision_model: String, embedding_model: String) -> Result<Self> {
+        Self::with_config(vision_model, embedding_model, PerformanceConfig::default())
+    }
+
+    /// Create a new multimodal client with custom performance configuration
+    pub fn with_config(
+        vision_model: String,
+        embedding_model: String,
+        performance_config: PerformanceConfig,
+    ) -> Result<Self> {
         // Detect provider capabilities
         let capabilities = Self::detect_capabilities(&embedding_model);
 
@@ -42,6 +85,7 @@ impl MultimodalClient {
             vision_model,
             embedding_model,
             capabilities,
+            performance_config,
         })
     }
 
@@ -96,7 +140,8 @@ impl MultimodalClient {
         let client = self.client.clone();
         let vision_model = self.vision_model.clone();
         let embedding_model = self.embedding_model.clone();
-        let image_base64 = base64::encode(image_data);
+        use base64::Engine as _;
+        let image_base64 = base64::engine::general_purpose::STANDARD.encode(image_data);
 
         RUNTIME.block_on(async move {
             // Step 1: Describe the image using vision model
@@ -118,7 +163,7 @@ impl MultimodalClient {
         })
     }
 
-    /// Process multiple images in batch
+    /// Process multiple images in batch with original sequential method
     pub fn embed_images_batch_sync(&self, images: Vec<&[u8]>) -> Result<Vec<Vec<f32>>> {
         let client = self.client.clone();
         let vision_model = self.vision_model.clone();
@@ -128,7 +173,8 @@ impl MultimodalClient {
             // Step 1: Describe all images
             let mut descriptions = Vec::new();
             for image_data in images {
-                let image_base64 = base64::encode(image_data);
+                use base64::Engine as _;
+        let image_base64 = base64::engine::general_purpose::STANDARD.encode(image_data);
                 let description = describe_image(&client, &vision_model, &image_base64).await?;
                 descriptions.push(description);
             }
@@ -150,12 +196,99 @@ impl MultimodalClient {
         })
     }
 
+    /// Process multiple images concurrently for optimal performance
+    pub fn embed_images_concurrent_sync(&self, images: Vec<&[u8]>) -> Result<(Vec<Vec<f32>>, ProcessingStats)> {
+        let client = self.client.clone();
+        let vision_model = self.vision_model.clone();
+        let embedding_model = self.embedding_model.clone();
+        let config = self.performance_config.clone();
+
+        RUNTIME.block_on(async move {
+            let start_time = Instant::now();
+            let semaphore = Arc::new(Semaphore::new(config.max_concurrent_requests));
+
+            // Process images concurrently with controlled parallelism
+            let futures = images.into_iter().map(|image_data| {
+                let client = client.clone();
+                let vision_model = vision_model.clone();
+                let embedding_model = embedding_model.clone();
+                let semaphore = semaphore.clone();
+                use base64::Engine as _;
+        let image_base64 = base64::engine::general_purpose::STANDARD.encode(image_data);
+
+                async move {
+                    let _permit = semaphore.acquire().await.unwrap();
+
+                    // Step 1: Describe image
+                    let description = match describe_image(&client, &vision_model, &image_base64).await {
+                        Ok(desc) => desc,
+                        Err(e) => return Err(e),
+                    };
+
+                    // Step 2: Generate embedding
+                    client
+                        .embed(&embedding_model, description, None)
+                        .await
+                        .map_err(|e| Error::new_message(format!("Embedding failed: {}", e)))
+                        .and_then(|response| {
+                            response
+                                .first_embedding()
+                                .ok_or_else(|| Error::new_message("No embedding in response"))
+                                .map(|embedding| {
+                                    embedding.vector().iter().map(|&v| v as f32).collect()
+                                })
+                        })
+                }
+            });
+
+            // Collect results
+            let results: Vec<Result<Vec<f32>>> = stream::iter(futures)
+                .buffer_unordered(config.max_concurrent_requests)
+                .collect()
+                .await;
+
+            // Process results and calculate statistics
+            let mut embeddings = Vec::new();
+            let mut successful = 0;
+            let mut failed = 0;
+
+            for result in results {
+                match result {
+                    Ok(embedding) => {
+                        embeddings.push(embedding);
+                        successful += 1;
+                    }
+                    Err(_) => failed += 1,
+                }
+            }
+
+            let total_duration = start_time.elapsed();
+            let total_processed = successful + failed;
+            let avg_time_per_item = if total_processed > 0 {
+                total_duration / total_processed as u32
+            } else {
+                Duration::ZERO
+            };
+
+            let stats = ProcessingStats {
+                total_processed,
+                successful,
+                failed,
+                total_duration,
+                avg_time_per_item,
+            };
+
+            Ok((embeddings, stats))
+        })
+    }
+
     /// Process image with custom prompt
     pub fn embed_image_with_prompt_sync(&self, image_data: &[u8], prompt: &str) -> Result<Vec<f32>> {
         let client = self.client.clone();
         let vision_model = self.vision_model.clone();
         let embedding_model = self.embedding_model.clone();
-        let image_base64 = base64::encode(image_data);
+        use base64::Engine as _;
+        let image_base64 = base64::engine::general_purpose::STANDARD.encode(image_data);
         let prompt = prompt.to_string();
 
         RUNTIME.block_on(async move {

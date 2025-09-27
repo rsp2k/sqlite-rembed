@@ -462,9 +462,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.4.0-alpha.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0b8f050c3d39d5893c99170c70054cbd7138de9b5a42b371c929b02d082a58d"
+version = "0.4.0-alpha.16-WIP"
+source = "git+https://github.com/rsp2k/rust-genai?branch=main#cc1c4f87e599e80eda93811774d0f9ce2e23d63c"
 dependencies = [
  "bytes",
  "derive_more 2.0.1",
@@ -1420,6 +1419,7 @@ name = "sqlite-rembed"
 version = "0.0.1-alpha.9"
 dependencies = [
  "base64",
+ "futures",
  "genai",
  "once_cell",
  "serde_json",
