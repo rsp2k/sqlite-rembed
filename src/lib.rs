@@ -53,6 +53,7 @@ Backend: genai v0.4.0-alpha.4
     Ok(())
 }
 
+
 pub fn rembed_client_options(
     context: *mut sqlite3_context,
     values: &[*mut sqlite3_value],
@@ -309,6 +310,8 @@ pub struct ClientsCursor<'vtab> {
     base: sqlite3_vtab_cursor,
     keys: Vec<String>,
     rowid: i64,
+    clients: Rc<RefCell<HashMap<String, EmbeddingClient>>>,
+    multimodal_clients: Rc<RefCell<HashMap<String, MultimodalClient>>>,
     phantom: PhantomData<&'vtab ClientsTable>,
 }
 
@@ -333,6 +336,8 @@ impl ClientsCursor<'_> {
             base,
             keys,
             rowid: 0,
+            clients: table.clients.clone(),
+            multimodal_clients: table.multimodal_clients.clone(),
             phantom: PhantomData,
         };
         Ok(cursor)
@@ -365,7 +370,20 @@ impl VTabCursor for ClientsCursor<'_> {
             .expect("Internal rembed_clients logic error");
         match column(i) {
             Some(Columns::Name) => api::result_text(context, key)?,
-            Some(Columns::Options) => (),
+            Some(Columns::Options) => {
+                // Check what type of client this is for debugging
+                let clients = self.clients.borrow();
+                if clients.contains_key(key) {
+                    api::result_text(context, "(embedding client)")?;
+                } else {
+                    drop(clients);
+                    let multimodal = self.multimodal_clients.borrow();
+                    if multimodal.contains_key(key) {
+                        api::result_text(context, "(multimodal client)")?;
+                    }
+                    // If neither, return NULL
+                }
+            },
             None => (),
         };
         Ok(())
