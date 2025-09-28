@@ -105,6 +105,7 @@ impl EmbeddingClient {
 }
 
 /// Parsed client configuration from SQL
+#[derive(Debug, PartialEq)]
 pub struct ClientConfig {
     pub model: String,
     pub api_key: Option<String>,
@@ -182,15 +183,18 @@ mod tests {
 
     #[test]
     fn test_parse_client_options() {
-        let model = parse_client_options("text-embedding-3-small", "openai").unwrap();
-        assert_eq!(model, "openai::text-embedding-3-small");
+        let config = parse_client_options("text-embedding-3-small", "openai").unwrap();
+        assert_eq!(config.model, "openai::text-embedding-3-small");
+        assert_eq!(config.api_key, None);
 
-        let model = parse_client_options("embedding-001", "gemini").unwrap();
-        assert_eq!(model, "gemini::embedding-001");
+        let config = parse_client_options("embedding-001", "gemini").unwrap();
+        assert_eq!(config.model, "gemini::embedding-001");
+        assert_eq!(config.api_key, None);
 
         // Test passthrough for full model identifiers
-        let model = parse_client_options("ignored", "openai::ada-002").unwrap();
-        assert_eq!(model, "openai::ada-002");
+        let config = parse_client_options("ignored", "openai::ada-002").unwrap();
+        assert_eq!(config.model, "openai::ada-002");
+        assert_eq!(config.api_key, None);
     }
 
     #[test]

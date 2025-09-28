@@ -17,6 +17,7 @@ static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
 
 /// Provider capabilities for intelligent routing
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ProviderCapabilities {
     pub supports_image_embeddings: bool,
     pub supports_multimodal_batch: bool,
@@ -372,11 +373,13 @@ async fn describe_image_with_prompt(
 }
 
 /// Configuration for multimodal client
+#[allow(dead_code)]
 pub struct MultimodalConfig {
     pub vision_model: String,
     pub embedding_model: String,
 }
 
+#[allow(dead_code)]
 impl MultimodalConfig {
     /// Create config for Ollama (LLaVA + nomic)
     pub fn ollama() -> Self {

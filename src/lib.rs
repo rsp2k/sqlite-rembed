@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use genai_client::{EmbeddingClient, parse_client_options, legacy_provider_to_model};
-use multimodal::{MultimodalClient, ProcessingStats};
+use multimodal::MultimodalClient;
 use sqlite_loadable::{
     api, define_scalar_function, define_scalar_function_with_aux, define_virtual_table_writeablex,
     prelude::*, Error, Result,
@@ -316,7 +316,7 @@ pub struct ClientsCursor<'vtab> {
 }
 
 impl ClientsCursor<'_> {
-    fn new(table: &mut ClientsTable) -> Result<ClientsCursor> {
+    fn new(table: &mut ClientsTable) -> Result<ClientsCursor<'_>> {
         let base: sqlite3_vtab_cursor = unsafe { mem::zeroed() };
 
         // Collect keys from both regular and multimodal clients
