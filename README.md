@@ -2,6 +2,7 @@
 
 **Turn SQLite into an AI powerhouse.** Generate embeddings from any AI provider with pure SQL.
 
+[![CI](https://github.com/asg017/sqlite-rembed/workflows/CI/badge.svg)](https://github.com/asg017/sqlite-rembed/actions)
 [![MIT/Apache 2.0](https://img.shields.io/badge/license-MIT%2FApache-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)](https://www.rust-lang.org)
 [![SQLite](https://img.shields.io/badge/sqlite-3.41%2B-green.svg)](https://sqlite.org)

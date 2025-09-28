@@ -1,6 +1,7 @@
 // New lib.rs using genai - complete implementation
 mod genai_client;
 mod multimodal;
+mod mock_provider;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
